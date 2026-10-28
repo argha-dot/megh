@@ -1,6 +1,6 @@
 //! Save locations (from the Ludusavi manifest) and local backups.
 //! - Steam Cloud and GOG Galaxy keep only the latest save.
-//! - We keep the last KEEP_BACKUPS copies, taken before each launch.
+//! - We keep the last KEEP_BACKUPS copies, taken before each launch and delete.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -16,7 +16,7 @@ use crate::library::Game;
 
 const MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml";
-const KEEP_BACKUPS: usize = 5;
+const KEEP_BACKUPS: usize = 1;
 
 #[derive(Deserialize)]
 struct Entry {
@@ -150,16 +150,66 @@ pub fn backup(slug: &str, game: &Game, prefix: &Path) -> Result<()> {
             (_, Ok(rel)) => Path::new("game").join(rel),
             _ => continue,
         };
-        let status = Command::new("ditto").arg(src).arg(dest.join(rel)).status()?;
-        if !status.success() {
-            bail!("failed to back up {}", src.display());
-        }
+        ditto(src, &dest.join(rel))?;
     }
     println!("Backed up saves to {}", dest.display());
 
     let backups = list_backups(slug)?;
     for old in backups.iter().take(backups.len().saturating_sub(KEEP_BACKUPS)) {
         fs::remove_dir_all(backups_dir(slug)?.join(old))?;
+    }
+    Ok(())
+}
+
+pub fn latest_backup(slug: &str) -> Result<Option<PathBuf>> {
+    let latest = list_backups(slug)?.pop();
+    latest.map(|name| Ok(backups_dir(slug)?.join(name))).transpose()
+}
+
+/// Copies a backup back into the prefix and game folder, merging over what's there.
+/// - The Windows user folder name differs per runtime (crossover, pulkit, ...),
+///   so any backed-up user folder goes into the prefix's current one.
+pub fn restore(backup: &Path, game: &Game, prefix: &Path) -> Result<()> {
+    let user = launch::user_dir(prefix)?;
+    for entry in entries(&backup.join("prefix/drive_c/users"))? {
+        let to = if entry.file_name() == "Public" {
+            prefix.join("drive_c/users/Public")
+        } else {
+            user.clone()
+        };
+        ditto(&entry.path(), &to)?;
+    }
+    // Anything else in the prefix keeps its path.
+    let rest = [
+        (backup.join("prefix"), prefix.to_path_buf(), "drive_c"),
+        (backup.join("prefix/drive_c"), prefix.join("drive_c"), "users"),
+    ];
+    for (from, to, skip) in rest {
+        for entry in entries(&from)? {
+            if entry.file_name() != skip {
+                ditto(&entry.path(), &to.join(entry.file_name()))?;
+            }
+        }
+    }
+    let saved_game = backup.join("game");
+    if saved_game.exists() {
+        ditto(&saved_game, &game.install_dir)?;
+    }
+    Ok(())
+}
+
+fn entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    Ok(fs::read_dir(dir)?.collect::<Result<_, _>>()?)
+}
+
+/// Copies a file or folder, merging into an existing folder.
+fn ditto(from: &Path, to: &Path) -> Result<()> {
+    let status = Command::new("ditto").arg(from).arg(to).status()?;
+    if !status.success() {
+        bail!("failed to copy {} to {}", from.display(), to.display());
     }
     Ok(())
 }

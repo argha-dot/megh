@@ -1,0 +1,25 @@
+# Wine runtimes megh knows about. Built into the binary.
+# - Add or override entries in ~/Library/Application Support/megh/runtimes.yml
+#   (same format; an entry with the same id replaces the one here).
+# - wine: path to the wine binary inside the extracted archive.
+# - arch: exe types this runtime is auto-picked for (i386 = 32-bit, x86_64 = 64-bit).
+# - status: tested | untested | broken. Auto-pick prefers tested, never picks broken.
+# - Order matters: the first matching runtime wins.
+runtimes:
+  - id: gptk-3.0-3
+    name: Game Porting Toolkit 3.0-3 (Gcenx build)
+    url: https://github.com/Gcenx/game-porting-toolkit/releases/download/Game-Porting-Toolkit-3.0-3/game-porting-toolkit-3.0-3.tar.xz
+    sha256: d377683937340f914823dbb2e1252b329cbf834ff58907d0293db8cebf0e392e
+    wine: Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64
+    arch: [x86_64]
+    status: tested
+    notes: Wine 7.7 + D3DMetal (DX11/12). Tested with Shogun Showdown. 32-bit games crash (e.g. Forager).
+
+  - id: wine-crossover-23.7.1-1
+    name: Wine Crossover 23.7.1-1 (Gcenx build, Heroic mirror)
+    url: https://github.com/Heroic-Games-Launcher/wine-crossover/releases/download/23.7.1-1/Wine-Crossover-23.7.1-1.tar.xz
+    sha256: 7e1ef682cbcdcc19717399b18c5d675c7713ee08395fc143974e3a1573aa1701
+    wine: Wine-Crossover-23.7.1-1/Contents/Resources/wine/bin/wine
+    arch: [i386]
+    status: tested
+    notes: Wine 8.0.1 (CrossOver 23.7.1), no D3DMetal. Tested with Forager (32-bit GameMaker).

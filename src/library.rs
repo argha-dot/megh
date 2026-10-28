@@ -25,6 +25,9 @@ pub struct Game {
     pub exe: PathBuf,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Runtime id from runtimes.yml; auto-picked by exe bitness if unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
     /// Ludusavi-style path templates, e.g. "<home>/AppData/LocalLow/Foo".
     #[serde(default)]
     pub saves: Vec<String>,

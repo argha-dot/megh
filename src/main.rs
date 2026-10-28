@@ -4,6 +4,7 @@ mod library;
 mod runtime;
 mod saves;
 
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -21,7 +22,18 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Install a GOG offline installer (setup_*.exe)
-    Install { setup: PathBuf },
+    Install {
+        setup: PathBuf,
+        #[arg(long, value_enum, default_value_t = install::Method::Auto)]
+        method: install::Method,
+        /// Runtime id to use instead of auto-picking (see: megh runtimes)
+        #[arg(long = "runtime", value_name = "ID")]
+        runtime_id: Option<String>,
+    },
+    /// List installed games
+    List,
+    /// Delete an installed game (saves are backed up first)
+    Delete { game: String },
     /// Run an installed game by name, or any Windows .exe by path
     Run {
         game: String,
@@ -31,12 +43,22 @@ enum Command {
         /// Write full Wine output to a log file
         #[arg(long)]
         log: bool,
+        /// Runtime id for this launch only (see: megh runtimes)
+        #[arg(long = "runtime", value_name = "ID")]
+        runtime_id: Option<String>,
         /// Arguments passed to the game (after --)
         #[arg(last = true)]
         args: Vec<String>,
     },
     /// Show save locations and backups for an installed game
-    Saves { game: String },
+    Saves {
+        game: String,
+        /// Restore the latest backup (overwrites current saves)
+        #[arg(long)]
+        restore: bool,
+    },
+    /// List known Wine runtimes and their status
+    Runtimes,
 }
 
 /// ~/Library/Application Support/megh
@@ -45,22 +67,48 @@ pub fn data_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join("Library/Application Support/megh"))
 }
 
+/// Asks a yes/no question; empty input picks `default`.
+pub fn confirm(question: &str, default: bool) -> Result<bool> {
+    print!("{question} {} ", if default { "[Y/n]" } else { "[y/N]" });
+    io::stdout().flush()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    Ok(match line.trim().to_lowercase().as_str() {
+        "y" | "yes" => true,
+        "n" | "no" => false,
+        _ => default,
+    })
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Install { setup } => {
+        Command::Install { setup, method, runtime_id } => {
             runtime::check_rosetta()?;
-            let rt = runtime::ensure()?;
-            install::install(&rt, &setup)
+            install::install(&setup, method, runtime_id.as_deref())
         }
-        Command::Run { game, hud, log, args } => {
+        Command::List => {
+            let library = Library::load()?;
+            if library.games.is_empty() {
+                println!("No games installed. Add one with: megh install <setup.exe>");
+            }
+            let width = library.games.keys().map(String::len).max().unwrap_or(0);
+            for (slug, game) in &library.games {
+                println!("{slug:width$}  {}", game.name);
+            }
+            Ok(())
+        }
+        Command::Delete { game } => install::delete(&game),
+        Command::Run { game, hud, log, runtime_id, args } => {
             runtime::check_rosetta()?;
-            let rt = runtime::ensure()?;
             let library = Library::load()?;
             if let Some(entry) = library.games.get(&game) {
+                let exe = entry.install_dir.join(&entry.exe);
+                let id = runtime_id.as_deref().or(entry.runtime.as_deref());
+                let rt = runtime::resolve(id, &exe)?;
                 let prefix = launch::prefix_path(&game)?;
                 saves::backup(&game, entry, &prefix)?;
                 let all_args = [entry.args.clone(), args].concat();
-                launch::run(&rt, &entry.install_dir.join(&entry.exe), &prefix, hud, log, &all_args)
+                launch::run(&rt, &exe, &prefix, hud, log, &all_args)
             } else {
                 // A bare exe path: prefix named after the game's folder.
                 let exe = PathBuf::from(&game);
@@ -72,16 +120,28 @@ fn main() -> Result<()> {
                     .context("bad exe path")?
                     .to_string_lossy()
                     .into_owned();
+                let rt = runtime::resolve(runtime_id.as_deref(), &exe)?;
                 launch::run(&rt, &exe, &launch::prefix_path(&folder)?, hud, log, &args)
             }
         }
-        Command::Saves { game } => {
+        Command::Runtimes => runtime::list(),
+        Command::Saves { game, restore } => {
             let library = Library::load()?;
             let entry = library
                 .games
                 .get(&game)
                 .with_context(|| format!("'{game}' is not installed"))?;
-            saves::show(&game, entry, &launch::prefix_path(&game)?)
+            let prefix = launch::prefix_path(&game)?;
+            if !restore {
+                return saves::show(&game, entry, &prefix);
+            }
+            let backup = saves::latest_backup(&game)?.context("no backups to restore")?;
+            let stamp = backup.file_name().unwrap_or_default().to_string_lossy();
+            if confirm(&format!("Restore saves from {stamp}? This overwrites current saves."), false)? {
+                saves::restore(&backup, entry, &prefix)?;
+                println!("Restored saves from {stamp}.");
+            }
+            Ok(())
         }
     }
 }
