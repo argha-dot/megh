@@ -31,3 +31,17 @@ At the time of writing there's no cloud support. Saves stay local, and game inst
  - Get Steam / GOG support working in here.
  - UI to do things.
  - A hundred other things
+
+## Credits
+Megh stands on other people's work. It downloads and runs these, but doesn't bundle them:
+ - [Wine](https://www.winehq.org) Is Not an Emulator.
+ - [Gcenx](https://github.com/Gcenx)'s macOS Wine builds, including the [Game Porting Toolkit](https://github.com/Gcenx/game-porting-toolkit) build. It contains Apple's D3DMetal, which is under [Apple's own license](https://developer.apple.com/games/); by downloading it, you're agreeing to that.
+ - [Heroic Games Launcher](https://github.com/Heroic-Games-Launcher)'s [wine-crossover](https://github.com/Heroic-Games-Launcher/wine-crossover) mirror, used for the Wine Crossover runtime.
+ - [Ludusavi](https://github.com/mtkennerly/ludusavi-manifest), for finding where games keep their saves.
+ - [innoextract](https://constexpr.org/innoextract/), for unpacking installers without Wine.
+
+### Inspirations
+ - [GameNative](https://github.com/utkarshdalal/GameNative): The Inspiration.
+ - [Whisky](https://github.com/Whisky-App/Whisky), RIP.
+ - [Heroic Games Launcher](https://heroicgameslauncher.com).
+ - [Sikarugir](https://github.com/Sikarugir-App/Sikarugir).

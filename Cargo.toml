@@ -3,6 +3,7 @@ name = "megh"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
+description = "Install and run Windows games on Apple Silicon Macs with Wine"
 
 [dependencies]
 anyhow = "1.0.104"

@@ -198,7 +198,7 @@ pub fn latest_backup(slug: &str) -> Result<Option<PathBuf>> {
 }
 
 /// Copies a backup back into the prefix and game folder, merging over what's there.
-/// - The Windows user folder name differs per runtime (crossover, pulkit, ...),
+/// - The Windows user folder name differs per runtime (crossover, the Mac username, ...),
 ///   so any backed-up user folder goes into the prefix's current one.
 pub fn restore(backup: &Path, game: &Game, prefix: &Path) -> Result<()> {
     let user = launch::user_dir(prefix)?;
@@ -410,13 +410,13 @@ Empty:
         let g = game(install.clone(), &["<winLocalAppData>/Forager", "<base>/saves"]);
 
         // Saved under Wine Crossover, whose user is named after the Mac account.
-        let old = fake_prefix(tmp.path(), "pulkit");
-        write(&old.join("drive_c/users/pulkit/AppData/Local/Forager/saveData0/Data.cin"), "progress");
+        let old = fake_prefix(tmp.path(), "alice");
+        write(&old.join("drive_c/users/alice/AppData/Local/Forager/saveData0/Data.cin"), "progress");
         write(&install.join("saves/slot1.sav"), "slot");
 
         let backups = tmp.path().join("backups");
         let dest = backup_into(&backups, &g, &old).unwrap().unwrap();
-        assert!(dest.join("prefix/drive_c/users/pulkit/AppData/Local/Forager/saveData0/Data.cin").is_file());
+        assert!(dest.join("prefix/drive_c/users/alice/AppData/Local/Forager/saveData0/Data.cin").is_file());
 
         // Restore into a GPTK prefix (user "crossover") after a reinstall.
         fs::remove_dir_all(install.join("saves")).unwrap();
@@ -425,7 +425,7 @@ Empty:
 
         let data = new.join("drive_c/users/crossover/AppData/Local/Forager/saveData0/Data.cin");
         assert_eq!(fs::read_to_string(data).unwrap(), "progress");
-        assert!(!new.join("drive_c/users/pulkit").exists());
+        assert!(!new.join("drive_c/users/alice").exists());
         assert_eq!(fs::read_to_string(install.join("saves/slot1.sav")).unwrap(), "slot");
     }
 
