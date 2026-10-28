@@ -15,6 +15,14 @@ A nascent project to run Windows games on macOS. Very early and experimental. No
 ## Quick Start
 At the time of writing there's no cloud support. Saves stay local, and game installation folders are needed. So, ideally, you should be using a DRM-free offline installer, like the ones GOG provides.
 
+## Try It
+[Shogun Showdown: Prologue](https://www.gog.com/en/game/shogun_showdown_prologue) is free on GOG, so it's an easy one to try. Add it to your GOG library, download its Windows offline installer, then:
+```sh
+cargo run -- install ~/Downloads/setup_shogun_showdown_prologue_*.exe
+cargo run -- run shogun-showdown-prologue --hud
+```
+The first run asks for a Wine runtime; type `download`. `--hud` shows Apple's Metal performance overlay.
+
 ## Commands
 `cargo run -- -h`
 
