@@ -116,3 +116,47 @@ pub fn wine_server_wait(rt: &Runtime, prefix: &Path) -> Result<()> {
     Command::new(wineserver).arg("-w").env("WINEPREFIX", prefix).status()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn user_dir_skips_public() {
+        let tmp = tempfile::tempdir().unwrap();
+        let users = tmp.path().join("drive_c/users");
+        fs::create_dir_all(users.join("Public")).unwrap();
+        fs::create_dir_all(users.join("crossover")).unwrap();
+        assert_eq!(user_dir(tmp.path()).unwrap(), users.join("crossover"));
+
+        let empty = tempfile::tempdir().unwrap();
+        fs::create_dir_all(empty.path().join("drive_c/users/Public")).unwrap();
+        assert!(user_dir(empty.path()).is_err());
+    }
+
+    #[test]
+    fn unlinking_keeps_the_real_folders_intact() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Stand-in for the real ~/Documents.
+        let real_docs = tmp.path().join("mac-home/Documents");
+        fs::create_dir_all(&real_docs).unwrap();
+        fs::write(real_docs.join("taxes.pdf"), "important").unwrap();
+
+        let prefix = tmp.path().join("prefix");
+        let user = prefix.join("drive_c/users/crossover");
+        fs::create_dir_all(user.join("AppData")).unwrap();
+        fs::write(user.join("AppData/keep.txt"), "x").unwrap();
+        symlink(&real_docs, user.join("Documents")).unwrap();
+
+        unlink_user_folders(&prefix).unwrap();
+
+        let docs = user.join("Documents");
+        assert!(!docs.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(docs.is_dir());
+        assert_eq!(fs::read_dir(&docs).unwrap().count(), 0);
+        // The Mac folder and the prefix's own folders are untouched.
+        assert_eq!(fs::read_to_string(real_docs.join("taxes.pdf")).unwrap(), "important");
+        assert!(user.join("AppData/keep.txt").is_file());
+    }
+}

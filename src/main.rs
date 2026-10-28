@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use library::Library;
 
 #[derive(Parser)]
-#[command(name = "megh", about = "Run Windows games on macOS via Wine + D3DMetal")]
+#[command(name = "megh", about = "Install and run Windows games on Apple Silicon Macs with Wine")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -29,6 +29,19 @@ enum Command {
         /// Runtime id to use instead of auto-picking (see: megh runtimes)
         #[arg(long = "runtime", value_name = "ID")]
         runtime_id: Option<String>,
+    },
+    /// Add a game that's already on disk (its files stay where they are)
+    Add {
+        exe: PathBuf,
+        /// Game name (default: from goggame-*.info, else the exe's folder name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Runtime id to use instead of auto-picking (see: megh runtimes)
+        #[arg(long = "runtime", value_name = "ID")]
+        runtime_id: Option<String>,
+        /// Arguments always passed to the game (after --)
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// List installed games
     List,
@@ -73,11 +86,15 @@ pub fn confirm(question: &str, default: bool) -> Result<bool> {
     io::stdout().flush()?;
     let mut line = String::new();
     io::stdin().read_line(&mut line)?;
-    Ok(match line.trim().to_lowercase().as_str() {
+    Ok(parse_answer(&line, default))
+}
+
+fn parse_answer(input: &str, default: bool) -> bool {
+    match input.trim().to_lowercase().as_str() {
         "y" | "yes" => true,
         "n" | "no" => false,
         _ => default,
-    })
+    }
 }
 
 fn main() -> Result<()> {
@@ -85,6 +102,10 @@ fn main() -> Result<()> {
         Command::Install { setup, method, runtime_id } => {
             runtime::check_rosetta()?;
             install::install(&setup, method, runtime_id.as_deref())
+        }
+        Command::Add { exe, name, runtime_id, args } => {
+            runtime::check_rosetta()?;
+            install::add(&exe, name, runtime_id.as_deref(), args)
         }
         Command::List => {
             let library = Library::load()?;
@@ -142,6 +163,29 @@ fn main() -> Result<()> {
                 println!("Restored saves from {stamp}.");
             }
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_answer;
+
+    #[test]
+    fn answers() {
+        for yes in ["y", "Y", "yes", " YES \n"] {
+            assert!(parse_answer(yes, false), "{yes:?}");
+        }
+        for no in ["n", "No", "no\n"] {
+            assert!(!parse_answer(no, true), "{no:?}");
+        }
+    }
+
+    #[test]
+    fn empty_or_unknown_uses_default() {
+        for input in ["", "\n", "maybe"] {
+            assert!(parse_answer(input, true));
+            assert!(!parse_answer(input, false));
         }
     }
 }

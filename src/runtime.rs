@@ -92,20 +92,38 @@ fn install_dir(id: &str) -> Result<PathBuf> {
 
 /// Built-in sources, with the user's runtimes.yml merged on top by id.
 fn sources() -> Result<Vec<Source>> {
-    let mut all = serde_saphyr::from_str::<Config>(BUILTIN)?.runtimes;
+    let mut all = parse(BUILTIN)?;
     let path = user_config()?;
     if path.exists() {
         let text = fs::read_to_string(&path)?;
-        let user: Config =
-            serde_saphyr::from_str(&text).with_context(|| format!("bad {}", path.display()))?;
-        for src in user.runtimes {
-            match all.iter_mut().find(|s| s.id == src.id) {
-                Some(existing) => *existing = src,
-                None => all.push(src),
-            }
-        }
+        let user = parse(&text).with_context(|| format!("bad {}", path.display()))?;
+        merge(&mut all, user);
     }
     Ok(all)
+}
+
+fn parse(yaml: &str) -> Result<Vec<Source>> {
+    Ok(serde_saphyr::from_str::<Config>(yaml)?.runtimes)
+}
+
+/// Same id replaces, new ids are appended.
+fn merge(all: &mut Vec<Source>, user: Vec<Source>) {
+    for src in user {
+        match all.iter_mut().find(|s| s.id == src.id) {
+            Some(existing) => *existing = src,
+            None => all.push(src),
+        }
+    }
+}
+
+/// First tested runtime for `arch`, else first that isn't broken.
+fn pick(sources: &[Source], arch: Arch) -> Option<&Source> {
+    let fits = |s: &&Source| s.arch.contains(&arch);
+    sources
+        .iter()
+        .filter(fits)
+        .find(|s| s.status == Status::Tested)
+        .or_else(|| sources.iter().filter(fits).find(|s| s.status != Status::Broken))
 }
 
 /// The runtime for an exe: `id` if given, else auto-picked by bitness.
@@ -119,12 +137,7 @@ pub fn resolve(id: Option<&str>, exe: &Path) -> Result<Runtime> {
             .with_context(|| format!("unknown runtime '{id}' (see: megh runtimes)"))?,
         None => {
             let arch = exe_arch(exe)?;
-            let fits = |s: &&Source| s.arch.contains(&arch);
-            sources
-                .iter()
-                .filter(fits)
-                .find(|s| s.status == Status::Tested)
-                .or_else(|| sources.iter().filter(fits).find(|s| s.status != Status::Broken))
+            pick(&sources, arch)
                 .with_context(|| format!("no runtime for {} exes (see: megh runtimes)", arch.name()))?
         }
     };
@@ -289,5 +302,110 @@ pub fn exe_arch(exe: &Path) -> Result<Arch> {
             other => bail!("unsupported exe machine type {other:#x}"),
         },
         _ => bail!(not_exe()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal PE header: "MZ", e_lfanew at 0x3c, then "PE\0\0" + machine.
+    fn fake_exe(dir: &Path, machine: u16) -> PathBuf {
+        let mut bytes = vec![0u8; 0x80];
+        bytes[0..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        bytes[0x40..0x44].copy_from_slice(b"PE\0\0");
+        bytes[0x44..0x46].copy_from_slice(&machine.to_le_bytes());
+        let path = dir.join(format!("{machine:x}.exe"));
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn source(id: &str, arch: Arch, status: Status) -> Source {
+        Source {
+            id: id.into(),
+            name: id.into(),
+            url: String::new(),
+            sha256: None,
+            wine: PathBuf::from("bin/wine"),
+            arch: vec![arch],
+            status,
+            notes: String::new(),
+        }
+    }
+
+    #[test]
+    fn exe_arch_reads_pe_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(exe_arch(&fake_exe(dir.path(), 0x014c)).unwrap(), Arch::I386));
+        assert!(matches!(exe_arch(&fake_exe(dir.path(), 0x8664)).unwrap(), Arch::X86_64));
+        assert!(exe_arch(&fake_exe(dir.path(), 0xaa64)).is_err()); // ARM64
+    }
+
+    #[test]
+    fn exe_arch_rejects_non_exes() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = dir.path().join("notes.txt");
+        fs::write(&text, "hello").unwrap();
+        assert!(exe_arch(&text).is_err());
+
+        // Header points past the end of the file.
+        let truncated = dir.path().join("short.exe");
+        let mut bytes = vec![0u8; 0x40];
+        bytes[0x3c..0x40].copy_from_slice(&0x1000u32.to_le_bytes());
+        fs::write(&truncated, bytes).unwrap();
+        assert!(exe_arch(&truncated).is_err());
+
+        assert!(exe_arch(&dir.path().join("missing.exe")).is_err());
+    }
+
+    #[test]
+    fn builtin_config_is_valid() {
+        let all = parse(BUILTIN).unwrap();
+        assert!(!all.is_empty());
+        for src in &all {
+            let dupes = all.iter().filter(|s| s.id == src.id).count();
+            assert_eq!(dupes, 1, "duplicate id {}", src.id);
+            let sha = src.sha256.as_deref().unwrap_or_default();
+            assert_eq!(sha.len(), 64, "{} needs a sha256", src.id);
+            assert!(src.url.starts_with("https://"), "{} url", src.id);
+        }
+        // Every arch has a runtime to auto-pick.
+        assert!(pick(&all, Arch::I386).is_some());
+        assert!(pick(&all, Arch::X86_64).is_some());
+    }
+
+    #[test]
+    fn user_entries_replace_or_append() {
+        let mut all = vec![source("a", Arch::I386, Status::Tested)];
+        merge(
+            &mut all,
+            vec![source("a", Arch::X86_64, Status::Broken), source("b", Arch::I386, Status::Untested)],
+        );
+        let ids: Vec<_> = all.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+        assert!(all[0].status == Status::Broken);
+    }
+
+    #[test]
+    fn pick_prefers_tested_and_skips_broken() {
+        let all = vec![
+            source("broken", Arch::I386, Status::Broken),
+            source("untested", Arch::I386, Status::Untested),
+            source("tested", Arch::I386, Status::Tested),
+        ];
+        assert_eq!(pick(&all, Arch::I386).unwrap().id, "tested");
+        assert_eq!(pick(&all[..2], Arch::I386).unwrap().id, "untested");
+        assert!(pick(&all[..1], Arch::I386).is_none());
+        assert!(pick(&all, Arch::X86_64).is_none());
+    }
+
+    #[test]
+    fn clean_path_undoes_drag_and_drop_quoting() {
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        assert_eq!(clean_path("'/a b/c'"), PathBuf::from("/a b/c"));
+        assert_eq!(clean_path("\"/a b/c\""), PathBuf::from("/a b/c"));
+        assert_eq!(clean_path("/a\\ b/c"), PathBuf::from("/a b/c"));
+        assert_eq!(clean_path("~/Games"), home.join("Games"));
     }
 }

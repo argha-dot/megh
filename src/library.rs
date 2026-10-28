@@ -53,3 +53,42 @@ impl Library {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_through_yaml() {
+        let mut library = Library::default();
+        library.games.insert(
+            "forager".into(),
+            Game {
+                name: "Forager".into(),
+                gog_id: Some(2106942030),
+                install_dir: PathBuf::from("/data/megh/games/forager"),
+                exe: PathBuf::from("Forager.exe"),
+                args: vec!["-windowed".into()],
+                runtime: Some("wine-crossover-23.7.1-1".into()),
+                saves: vec!["<winLocalAppData>/Forager".into()],
+            },
+        );
+        let yaml = serde_saphyr::to_string(&library).unwrap();
+        let back: Library = serde_saphyr::from_str(&yaml).unwrap();
+        let game = &back.games["forager"];
+        assert_eq!(game.gog_id, Some(2106942030));
+        assert_eq!(game.args, ["-windowed"]);
+        assert_eq!(game.runtime.as_deref(), Some("wine-crossover-23.7.1-1"));
+        assert_eq!(game.saves, ["<winLocalAppData>/Forager"]);
+    }
+
+    #[test]
+    fn loads_entries_from_before_runtimes_existed() {
+        // Written by an older megh: no runtime, gog_id, args or saves.
+        let yaml = "games:\n  shogun-showdown:\n    name: Shogun Showdown\n    install_dir: /x\n    exe: ShogunShowdown.exe\n";
+        let library: Library = serde_saphyr::from_str(yaml).unwrap();
+        let game = &library.games["shogun-showdown"];
+        assert!(game.runtime.is_none() && game.gog_id.is_none());
+        assert!(game.args.is_empty() && game.saves.is_empty());
+    }
+}

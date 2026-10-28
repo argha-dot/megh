@@ -1,0 +1,24 @@
+{
+    "languages": [
+        "en-US"
+    ],
+    "version": 1,
+    "name": "Shogun Showdown",
+    "language": "English",
+    "gameId": "1104084973",
+    "rootGameId": "1104084973",
+    "playTasks": [
+        {
+            "languages": [
+                "en-US"
+            ],
+            "name": "Shogun Showdown",
+            "type": "FileTask",
+            "isPrimary": true,
+            "path": "ShogunShowdown.exe",
+            "category": "game",
+            "url": ""
+        }
+    ],
+    "buildId": "59059134842096269"
+}
