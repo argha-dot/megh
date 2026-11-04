@@ -4,6 +4,7 @@
 # - wine: path to the wine binary inside the extracted archive.
 # - arch: exe types this runtime is auto-picked for (i386 = 32-bit, x86_64 = 64-bit).
 # - status: tested | untested | broken. Auto-pick prefers tested, never picks broken.
+# - metal_hud: true if games draw through Metal directly, so `--hud` can show (default false).
 # - Order matters: the first matching runtime wins.
 runtimes:
   - id: gptk-3.0-3
@@ -13,6 +14,7 @@ runtimes:
     wine: Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64
     arch: [x86_64]
     status: tested
+    metal_hud: true
     notes: Wine 7.7 + D3DMetal (DX11/12). Tested with Shogun Showdown. 32-bit games crash (e.g. Forager).
 
   - id: wine-crossover-23.7.1-1
@@ -23,3 +25,20 @@ runtimes:
     arch: [i386]
     status: tested
     notes: Wine 8.0.1 (CrossOver 23.7.1), no D3DMetal. Tested with Forager (32-bit GameMaker).
+
+# Graphics layers: DLLs that replace Wine's own, set per game (`graphics: <id>` in library.yml).
+# - dir: folder inside the extracted archive that holds x32/ and x64/.
+# - dlls: copied into the prefix (x32 -> syswow64, x64 -> system32) and loaded native-first.
+# - env: always set. A game's own env overrides it.
+# - `--hud` shows the Metal HUD, which works here too (MoltenVK draws through Metal).
+graphics:
+  - id: dxvk-macos-1.10.3
+    name: DXVK-macOS 1.10.3 async (Gcenx build)
+    url: https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz
+    sha256: acd1520ad105d8ef124a09c8e11a259a5dc8bdc565ad18e0e52693f9807b2477
+    dir: dxvk-macOS-async-v1.10.3-20230507-repack
+    dlls: [d3d11, d3d10core]
+    env:
+      # Fast math blows out bloom/HDR into white.
+      MVK_CONFIG_FAST_MATH_ENABLED: "0"
+    notes: DX10/11 -> Vulkan -> MoltenVK. Tested with Sacrifices Must Be Made (32-bit Unity).

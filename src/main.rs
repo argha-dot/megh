@@ -59,6 +59,9 @@ enum Command {
         /// Runtime id for this launch only (see: megh runtimes)
         #[arg(long = "runtime", value_name = "ID")]
         runtime_id: Option<String>,
+        /// Graphics layer id for this launch only, e.g. DXVK (see: megh runtimes)
+        #[arg(long = "graphics", value_name = "ID")]
+        graphics_id: Option<String>,
         /// Arguments passed to the game (after --)
         #[arg(last = true)]
         args: Vec<String>,
@@ -69,6 +72,9 @@ enum Command {
         /// Restore the latest backup (overwrites current saves)
         #[arg(long)]
         restore: bool,
+        /// Look up save locations again and update the library
+        #[arg(long, conflicts_with = "restore")]
+        refresh: bool,
     },
     /// List known Wine runtimes and their status
     Runtimes,
@@ -119,17 +125,18 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Delete { game } => install::delete(&game),
-        Command::Run { game, hud, log, runtime_id, args } => {
+        Command::Run { game, hud, log, runtime_id, graphics_id, args } => {
             runtime::check_rosetta()?;
             let library = Library::load()?;
             if let Some(entry) = library.games.get(&game) {
                 let exe = entry.install_dir.join(&entry.exe);
                 let id = runtime_id.as_deref().or(entry.runtime.as_deref());
                 let rt = runtime::resolve(id, &exe)?;
+                let gfx = graphics_id.as_deref().or(entry.graphics.as_deref()).map(runtime::graphics).transpose()?;
                 let prefix = launch::prefix_path(&game)?;
                 saves::backup(&game, entry, &prefix)?;
                 let all_args = [entry.args.clone(), args].concat();
-                launch::run(&rt, &exe, &prefix, hud, log, &all_args)
+                launch::run(&rt, gfx.as_ref(), &exe, &prefix, hud, log, &all_args, &entry.env)
             } else {
                 // A bare exe path: prefix named after the game's folder.
                 let exe = PathBuf::from(&game);
@@ -142,16 +149,23 @@ fn main() -> Result<()> {
                     .to_string_lossy()
                     .into_owned();
                 let rt = runtime::resolve(runtime_id.as_deref(), &exe)?;
-                launch::run(&rt, &exe, &launch::prefix_path(&folder)?, hud, log, &args)
+                let gfx = graphics_id.as_deref().map(runtime::graphics).transpose()?;
+                let prefix = launch::prefix_path(&folder)?;
+                launch::run(&rt, gfx.as_ref(), &exe, &prefix, hud, log, &args, &Default::default())
             }
         }
         Command::Runtimes => runtime::list(),
-        Command::Saves { game, restore } => {
-            let library = Library::load()?;
+        Command::Saves { game, restore, refresh } => {
+            let mut library = Library::load()?;
             let entry = library
                 .games
-                .get(&game)
+                .get_mut(&game)
                 .with_context(|| format!("'{game}' is not installed"))?;
+            if refresh {
+                entry.saves = saves::locate(entry);
+                library.save()?;
+            }
+            let entry = &library.games[&game];
             let prefix = launch::prefix_path(&game)?;
             if !restore {
                 return saves::show(&game, entry, &prefix);

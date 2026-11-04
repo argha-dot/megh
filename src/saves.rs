@@ -57,6 +57,34 @@ impl FileRule {
     }
 }
 
+/// Save path templates for a game: the Ludusavi manifest, then the Unity fallback.
+/// - A failed manifest lookup is only a warning; the game still installs.
+pub fn locate(game: &Game) -> Vec<String> {
+    let found = lookup(game.gog_id, &game.name).unwrap_or_else(|e| {
+        eprintln!("Warning: save lookup failed: {e:#}");
+        Vec::new()
+    });
+    if !found.is_empty() {
+        return found;
+    }
+    unity_saves(&game.install_dir.join(&game.exe)).into_iter().collect()
+}
+
+/// Unity saves to LocalLow/<company>/<product>, both named in <exe>_Data/app.info.
+fn unity_saves(exe: &Path) -> Option<String> {
+    let stem = exe.file_stem()?.to_string_lossy();
+    let info = fs::read_to_string(exe.with_file_name(format!("{stem}_Data")).join("app.info")).ok()?;
+    let mut lines = info.lines().map(str::trim);
+    let (company, product) = (lines.next()?, lines.next()?);
+    // These become path components; reject anything that could escape LocalLow.
+    let safe = |s: &str| !s.is_empty() && s != "." && s != ".." && !s.contains(['/', '\\']);
+    if !safe(company) || !safe(product) {
+        return None;
+    }
+    let esc = glob::Pattern::escape;
+    Some(format!("<winLocalAppDataLow>/{}/{}", esc(company), esc(product)))
+}
+
 /// Save path templates for a game, by GOG id or exact name.
 /// - Re-downloads the manifest when it's over a week old.
 /// - Falls back to the cached copy if that fails (e.g. offline).
@@ -345,6 +373,8 @@ Empty:
             exe: PathBuf::from("Game.exe"),
             args: Vec::new(),
             runtime: None,
+            graphics: None,
+            env: Default::default(),
             saves: saves.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -453,6 +483,45 @@ Empty:
         let backups = tmp.path().join("backups");
         assert!(backup_into(&backups, &g, &prefix).unwrap().is_none());
         assert!(!backups.exists());
+    }
+
+    fn unity_game(dir: &Path, app_info: &str) -> PathBuf {
+        let exe = dir.join("ShogunShowdownPrologue.exe");
+        write(&dir.join("ShogunShowdownPrologue_Data/app.info"), app_info);
+        exe
+    }
+
+    #[test]
+    fn unity_saves_come_from_app_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = unity_game(tmp.path(), "Roboatino\nShogunShowdownPrologue");
+        assert_eq!(
+            unity_saves(&exe).unwrap(),
+            "<winLocalAppDataLow>/Roboatino/ShogunShowdownPrologue"
+        );
+    }
+
+    #[test]
+    fn unity_saves_resolve_with_odd_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = unity_game(&tmp.path().join("game"), "Studio [Beta]\r\nGame * 2\r\n");
+        let template = unity_saves(&exe).unwrap();
+
+        let prefix = fake_prefix(tmp.path(), "crossover");
+        let saves = prefix.join("drive_c/users/crossover/AppData/LocalLow/Studio [Beta]/Game * 2");
+        fs::create_dir_all(&saves).unwrap();
+        let g = game(tmp.path().join("game"), &[]);
+        assert_eq!(resolve(&template, &g, &prefix).unwrap(), [saves]);
+    }
+
+    #[test]
+    fn unity_saves_rejects_missing_or_unsafe_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(unity_saves(&tmp.path().join("NoData.exe")).is_none());
+        for bad in ["OnlyOneLine", "\nProduct", "Company\n", "..\nProduct", "Company\na/b", "Co\\x\nP"] {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(unity_saves(&unity_game(dir.path(), bad)).is_none(), "{bad:?}");
+        }
     }
 
     #[test]

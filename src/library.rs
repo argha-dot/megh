@@ -28,6 +28,12 @@ pub struct Game {
     /// Runtime id from runtimes.yml; auto-picked by exe bitness if unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
+    /// Graphics layer id from runtimes.yml (e.g. DXVK); Wine's own if unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphics: Option<String>,
+    /// Extra env vars for launching, e.g. WINEDLLOVERRIDES. Override megh's defaults.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     /// Ludusavi-style path templates, e.g. "<home>/AppData/LocalLow/Foo".
     #[serde(default)]
     pub saves: Vec<String>,
@@ -70,6 +76,8 @@ mod tests {
                 exe: PathBuf::from("Forager.exe"),
                 args: vec!["-windowed".into()],
                 runtime: Some("wine-crossover-23.7.1-1".into()),
+                graphics: Some("dxvk-macos-1.10.3".into()),
+                env: BTreeMap::from([("WINEDLLOVERRIDES".into(), "d3d11,dxgi=n,b".into())]),
                 saves: vec!["<winLocalAppData>/Forager".into()],
             },
         );
@@ -79,6 +87,8 @@ mod tests {
         assert_eq!(game.gog_id, Some(2106942030));
         assert_eq!(game.args, ["-windowed"]);
         assert_eq!(game.runtime.as_deref(), Some("wine-crossover-23.7.1-1"));
+        assert_eq!(game.graphics.as_deref(), Some("dxvk-macos-1.10.3"));
+        assert_eq!(game.env["WINEDLLOVERRIDES"], "d3d11,dxgi=n,b");
         assert_eq!(game.saves, ["<winLocalAppData>/Forager"]);
     }
 
@@ -88,7 +98,8 @@ mod tests {
         let yaml = "games:\n  shogun-showdown:\n    name: Shogun Showdown\n    install_dir: /x\n    exe: ShogunShowdown.exe\n";
         let library: Library = serde_saphyr::from_str(yaml).unwrap();
         let game = &library.games["shogun-showdown"];
-        assert!(game.runtime.is_none() && game.gog_id.is_none());
+        assert!(game.runtime.is_none() && game.gog_id.is_none() && game.env.is_empty());
+        assert!(game.graphics.is_none());
         assert!(game.args.is_empty() && game.saves.is_empty());
     }
 }

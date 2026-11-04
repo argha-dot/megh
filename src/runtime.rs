@@ -2,7 +2,9 @@
 //! - The built-in list ships in the binary.
 //! - Users can add or override entries in <data_dir>/runtimes.yml.
 //! - Installed runtimes live in <data_dir>/runtimes/<id>/.
+//! - Graphics layers (e.g. DXVK) are listed and installed the same way, in <data_dir>/graphics/<id>/.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -61,18 +63,72 @@ pub struct Source {
     /// Exe types this runtime is auto-picked for.
     pub arch: Vec<Arch>,
     pub status: Status,
+    /// Whether games draw through Metal directly (D3DMetal), so the Metal HUD can show.
+    #[serde(default)]
+    pub metal_hud: bool,
+    #[serde(default)]
+    pub notes: String,
+}
+
+/// One entry in runtimes.yml's `graphics` list: DLLs that replace Wine's own.
+#[derive(Deserialize)]
+pub struct GraphicsSource {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub sha256: Option<String>,
+    /// Folder inside the extracted archive that holds x32/ and x64/.
+    pub dir: PathBuf,
+    /// DLL names without ".dll".
+    pub dlls: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub notes: String,
 }
 
 #[derive(Deserialize)]
 struct Config {
+    #[serde(default)]
     runtimes: Vec<Source>,
+    #[serde(default)]
+    graphics: Vec<GraphicsSource>,
+}
+
+/// What `ensure` needs to fetch an entry from runtimes.yml.
+struct Item<'a> {
+    id: &'a str,
+    name: &'a str,
+    url: &'a str,
+    sha256: Option<&'a str>,
+    /// Exists inside the install folder once installed.
+    check: &'a Path,
+}
+
+impl Source {
+    fn item(&self) -> Item<'_> {
+        Item { id: &self.id, name: &self.name, url: &self.url, sha256: self.sha256.as_deref(), check: &self.wine }
+    }
+}
+
+impl GraphicsSource {
+    fn item(&self) -> Item<'_> {
+        Item { id: &self.id, name: &self.name, url: &self.url, sha256: self.sha256.as_deref(), check: &self.dir }
+    }
+}
+
+/// An installed graphics layer.
+pub struct Graphics {
+    /// Folder holding x32/ and x64/.
+    pub root: PathBuf,
+    pub dlls: Vec<String>,
+    pub env: BTreeMap<String, String>,
 }
 
 /// An installed runtime.
 pub struct Runtime {
     pub id: String,
+    pub metal_hud: bool,
     wine: PathBuf,
 }
 
@@ -90,26 +146,31 @@ fn install_dir(id: &str) -> Result<PathBuf> {
     Ok(data_dir()?.join("runtimes").join(id))
 }
 
-/// Built-in sources, with the user's runtimes.yml merged on top by id.
-fn sources() -> Result<Vec<Source>> {
+fn graphics_dir(id: &str) -> Result<PathBuf> {
+    Ok(data_dir()?.join("graphics").join(id))
+}
+
+/// Built-in config, with the user's runtimes.yml merged on top by id.
+fn config() -> Result<Config> {
     let mut all = parse(BUILTIN)?;
     let path = user_config()?;
     if path.exists() {
         let text = fs::read_to_string(&path)?;
         let user = parse(&text).with_context(|| format!("bad {}", path.display()))?;
-        merge(&mut all, user);
+        merge(&mut all.runtimes, user.runtimes, |s| &s.id);
+        merge(&mut all.graphics, user.graphics, |g| &g.id);
     }
     Ok(all)
 }
 
-fn parse(yaml: &str) -> Result<Vec<Source>> {
-    Ok(serde_saphyr::from_str::<Config>(yaml)?.runtimes)
+fn parse(yaml: &str) -> Result<Config> {
+    Ok(serde_saphyr::from_str(yaml)?)
 }
 
 /// Same id replaces, new ids are appended.
-fn merge(all: &mut Vec<Source>, user: Vec<Source>) {
+fn merge<T>(all: &mut Vec<T>, user: Vec<T>, id: fn(&T) -> &String) {
     for src in user {
-        match all.iter_mut().find(|s| s.id == src.id) {
+        match all.iter_mut().find(|s| id(s) == id(&src)) {
             Some(existing) => *existing = src,
             None => all.push(src),
         }
@@ -129,7 +190,7 @@ fn pick(sources: &[Source], arch: Arch) -> Option<&Source> {
 /// The runtime for an exe: `id` if given, else auto-picked by bitness.
 /// Installs it (after asking) if needed.
 pub fn resolve(id: Option<&str>, exe: &Path) -> Result<Runtime> {
-    let sources = sources()?;
+    let sources = config()?.runtimes;
     let src = match id {
         Some(id) => sources
             .iter()
@@ -141,12 +202,27 @@ pub fn resolve(id: Option<&str>, exe: &Path) -> Result<Runtime> {
                 .with_context(|| format!("no runtime for {} exes (see: megh runtimes)", arch.name()))?
         }
     };
-    ensure(src)
+    let dir = install_dir(&src.id)?;
+    ensure(&src.item(), &dir)?;
+    Ok(Runtime { id: src.id.clone(), metal_hud: src.metal_hud, wine: dir.join(&src.wine) })
+}
+
+/// The graphics layer `id`, installed (after asking) if needed.
+pub fn graphics(id: &str) -> Result<Graphics> {
+    let src = config()?
+        .graphics
+        .into_iter()
+        .find(|g| g.id == id)
+        .with_context(|| format!("unknown graphics '{id}' (see: megh runtimes)"))?;
+    let dir = graphics_dir(&src.id)?;
+    ensure(&src.item(), &dir)?;
+    Ok(Graphics { root: dir.join(&src.dir), dlls: src.dlls, env: src.env })
 }
 
 /// `megh runtimes`
 pub fn list() -> Result<()> {
-    for src in sources()? {
+    let config = config()?;
+    for src in config.runtimes {
         let installed = install_dir(&src.id)?.join(&src.wine).is_file();
         let arch: Vec<_> = src.arch.iter().map(|a| a.name()).collect();
         println!(
@@ -161,7 +237,16 @@ pub fn list() -> Result<()> {
             println!("    {}", src.notes);
         }
     }
-    println!("\nAdd or override runtimes in {}", user_config()?.display());
+    println!("\nGraphics (per game: `graphics: <id>` in library.yml, or run --graphics <id>):");
+    for g in config.graphics {
+        let installed = graphics_dir(&g.id)?.join(&g.dir).is_dir();
+        println!("{}{}", g.id, if installed { "  (installed)" } else { "" });
+        println!("    {}", g.name);
+        if !g.notes.is_empty() {
+            println!("    {}", g.notes);
+        }
+    }
+    println!("\nAdd or override runtimes and graphics in {}", user_config()?.display());
     Ok(())
 }
 
@@ -176,23 +261,22 @@ pub fn check_rosetta() -> Result<()> {
     Ok(())
 }
 
-/// Returns the installed runtime, asking for a path or download if missing.
-fn ensure(src: &Source) -> Result<Runtime> {
-    let dir = install_dir(&src.id)?;
-    let rt = Runtime { id: src.id.clone(), wine: dir.join(&src.wine) };
-    if rt.wine.is_file() {
-        return Ok(rt);
+/// Installs `item` into `dir` if missing, asking for a path or download.
+fn ensure(item: &Item, dir: &Path) -> Result<()> {
+    let installed = || dir.join(item.check).exists();
+    if installed() {
+        return Ok(());
     }
 
-    println!("Runtime '{}' ({}) is not installed.", src.id, src.name);
+    println!("'{}' ({}) is not installed.", item.id, item.name);
     loop {
         println!("Enter a path to its archive or an extracted folder (drag & drop works),");
-        print!("or type 'download' to fetch it from {}: ", src.url);
+        print!("or type 'download' to fetch it from {}: ", item.url);
         io::stdout().flush()?;
 
         let mut line = String::new();
         if io::stdin().read_line(&mut line)? == 0 {
-            bail!("runtime '{}' is not installed", src.id);
+            bail!("'{}' is not installed", item.id);
         }
         let input = line.trim();
         if input.is_empty() {
@@ -201,18 +285,18 @@ fn ensure(src: &Source) -> Result<Runtime> {
 
         // Clear a broken earlier attempt. Doesn't follow symlinks.
         if dir.symlink_metadata().is_ok() {
-            fs::remove_dir_all(&dir)?;
+            fs::remove_dir_all(dir)?;
         }
         let result = if input == "download" {
-            download(src, &dir)
+            download(item, dir)
         } else {
-            add_local(src, &clean_path(input), &dir)
+            add_local(item, &clean_path(input), dir)
         };
         match result {
-            Ok(()) if rt.wine.is_file() => return Ok(rt),
+            Ok(()) if installed() => return Ok(()),
             Ok(()) => {
-                fs::remove_dir_all(&dir)?;
-                eprintln!("Error: no {} inside it\n", src.wine.display());
+                fs::remove_dir_all(dir)?;
+                eprintln!("Error: no {} inside it\n", item.check.display());
             }
             Err(e) => eprintln!("Error: {e:#}\n"),
         }
@@ -229,47 +313,47 @@ fn clean_path(input: &str) -> PathBuf {
 }
 
 /// An archive gets extracted; an extracted folder gets symlinked.
-fn add_local(src: &Source, path: &Path, dir: &Path) -> Result<()> {
+fn add_local(item: &Item, path: &Path, dir: &Path) -> Result<()> {
     let path = path
         .canonicalize()
         .with_context(|| format!("{} not found", path.display()))?;
     if path.is_file() {
-        return extract(src, &path, dir);
+        return extract(item, &path, dir);
     }
-    if !path.join(&src.wine).is_file() {
-        bail!("no {} in {}", src.wine.display(), path.display());
+    if !path.join(item.check).exists() {
+        bail!("no {} in {}", item.check.display(), path.display());
     }
     fs::create_dir_all(dir.parent().unwrap())?;
     std::os::unix::fs::symlink(&path, dir)?;
     Ok(())
 }
 
-fn download(src: &Source, dir: &Path) -> Result<()> {
-    let archive = data_dir()?.join("downloads").join(&src.id);
+fn download(item: &Item, dir: &Path) -> Result<()> {
+    let archive = data_dir()?.join("downloads").join(item.id);
     fs::create_dir_all(archive.parent().unwrap())?;
     let status = Command::new("curl")
         .args(["-L", "--fail", "-o"])
         .arg(&archive)
-        .arg(&src.url)
+        .arg(item.url)
         .status()?;
     if !status.success() {
         bail!("download failed");
     }
-    let result = extract(src, &archive, dir);
+    let result = extract(item, &archive, dir);
     fs::remove_file(&archive)?;
     result
 }
 
 /// Verifies the sha256 (if the config has one) and unpacks into `dir`.
-fn extract(src: &Source, archive: &Path, dir: &Path) -> Result<()> {
-    match &src.sha256 {
+fn extract(item: &Item, archive: &Path, dir: &Path) -> Result<()> {
+    match item.sha256 {
         Some(want) => {
             let out = Command::new("shasum").args(["-a", "256"]).arg(archive).output()?;
-            if !String::from_utf8_lossy(&out.stdout).starts_with(want.as_str()) {
-                bail!("checksum mismatch: {} is not '{}'", archive.display(), src.id);
+            if !String::from_utf8_lossy(&out.stdout).starts_with(want) {
+                bail!("checksum mismatch: {} is not '{}'", archive.display(), item.id);
             }
         }
-        None => eprintln!("Warning: no sha256 for '{}' in config; not verified", src.id),
+        None => eprintln!("Warning: no sha256 for '{}' in config; not verified", item.id),
     }
 
     fs::create_dir_all(dir)?;
@@ -330,6 +414,7 @@ mod tests {
             wine: PathBuf::from("bin/wine"),
             arch: vec![arch],
             status,
+            metal_hud: false,
             notes: String::new(),
         }
     }
@@ -361,7 +446,7 @@ mod tests {
 
     #[test]
     fn builtin_config_is_valid() {
-        let all = parse(BUILTIN).unwrap();
+        let all = parse(BUILTIN).unwrap().runtimes;
         assert!(!all.is_empty());
         for src in &all {
             let dupes = all.iter().filter(|s| s.id == src.id).count();
@@ -373,6 +458,30 @@ mod tests {
         // Every arch has a runtime to auto-pick.
         assert!(pick(&all, Arch::I386).is_some());
         assert!(pick(&all, Arch::X86_64).is_some());
+        // Only the D3DMetal runtime can show the Metal HUD.
+        let hud: Vec<_> = all.iter().filter(|s| s.metal_hud).map(|s| s.id.as_str()).collect();
+        assert_eq!(hud, ["gptk-3.0-3"]);
+    }
+
+    #[test]
+    fn builtin_graphics_are_valid() {
+        let all = parse(BUILTIN).unwrap().graphics;
+        assert!(!all.is_empty());
+        for g in &all {
+            assert_eq!(all.iter().filter(|x| x.id == g.id).count(), 1, "duplicate id {}", g.id);
+            assert_eq!(g.sha256.as_deref().unwrap_or_default().len(), 64, "{} needs a sha256", g.id);
+            assert!(g.url.starts_with("https://"), "{} url", g.id);
+            assert!(!g.dlls.is_empty(), "{} has no dlls", g.id);
+            assert!(g.dlls.iter().all(|d| !d.ends_with(".dll")), "{}: names without .dll", g.id);
+        }
+    }
+
+    #[test]
+    fn user_file_can_have_only_graphics() {
+        let config = parse("graphics:\n  - {id: x, name: X, url: u, dir: d, dlls: [d3d11]}\n").unwrap();
+        assert!(config.runtimes.is_empty());
+        assert_eq!(config.graphics[0].dlls, ["d3d11"]);
+        assert!(config.graphics[0].env.is_empty() && config.graphics[0].sha256.is_none());
     }
 
     #[test]
@@ -381,6 +490,7 @@ mod tests {
         merge(
             &mut all,
             vec![source("a", Arch::X86_64, Status::Broken), source("b", Arch::I386, Status::Untested)],
+            |s| &s.id,
         );
         let ids: Vec<_> = all.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["a", "b"]);

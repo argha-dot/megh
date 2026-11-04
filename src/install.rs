@@ -119,6 +119,8 @@ pub fn install(setup: &Path, method: Method, runtime_id: Option<&str>) -> Result
         exe,
         args: task.arguments.split_whitespace().map(String::from).collect(),
         runtime: None,
+        graphics: None,
+        env: Default::default(),
         saves: Vec::new(),
     };
     register(&slug, game, &rt)
@@ -148,6 +150,8 @@ pub fn add(exe: &Path, name: Option<String>, runtime_id: Option<&str>, args: Vec
         exe: PathBuf::from(exe.file_name().context("bad exe path")?),
         args,
         runtime: None,
+        graphics: None,
+        env: Default::default(),
         saves: Vec::new(),
     };
     register(&slug, game, &rt)
@@ -164,10 +168,7 @@ fn register(slug: &str, mut game: Game, rt: &Runtime) -> Result<()> {
     let prefix = launch::prefix_path(slug)?;
     launch::ensure_prefix(rt, &prefix)?;
     game.runtime = Some(rt.id.clone());
-    game.saves = saves::lookup(game.gog_id, &game.name).unwrap_or_else(|e| {
-        eprintln!("Warning: save lookup failed: {e:#}");
-        Vec::new()
-    });
+    game.saves = saves::locate(&game);
 
     // Backups survive `megh delete`, so a reinstall can pick them up.
     if let Some(backup) = saves::latest_backup(slug)? {
