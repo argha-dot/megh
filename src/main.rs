@@ -3,6 +3,7 @@ mod launch;
 mod library;
 mod runtime;
 mod saves;
+mod steam;
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install a GOG offline installer (setup_*.exe)
+    /// Install a GOG offline installer (setup_*.exe), or a Steam game as steam:<appid>
     Install {
         setup: PathBuf,
         #[arg(long, value_enum, default_value_t = install::Method::Auto)]
@@ -78,6 +79,30 @@ enum Command {
     },
     /// List known Wine runtimes and their status
     Runtimes,
+    /// Steam account: login, owned games
+    Steam {
+        #[command(subcommand)]
+        command: SteamCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SteamCommand {
+    /// Log in with username, password and Steam Guard (the token is kept in the Keychain)
+    Login,
+    /// Forget the saved login on this Mac
+    Logout,
+    /// Show the account and check the saved login still works
+    Status,
+    /// List the games this account owns
+    Games,
+    /// Download and install a game by app id (see: megh steam games)
+    Install {
+        app_id: u32,
+        /// Runtime id to use instead of auto-picking (see: megh runtimes)
+        #[arg(long = "runtime", value_name = "ID")]
+        runtime_id: Option<String>,
+    },
 }
 
 /// ~/Library/Application Support/megh
@@ -107,7 +132,13 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Install { setup, method, runtime_id } => {
             runtime::check_rosetta()?;
-            install::install(&setup, method, runtime_id.as_deref())
+            match steam::parse_target(&setup)? {
+                Some(_) if !matches!(method, install::Method::Auto) => {
+                    anyhow::bail!("--method only applies to GOG installers")
+                }
+                Some(app_id) => steam::install(app_id, runtime_id.as_deref()),
+                None => install::install(&setup, method, runtime_id.as_deref()),
+            }
         }
         Command::Add { exe, name, runtime_id, args } => {
             runtime::check_rosetta()?;
@@ -155,6 +186,16 @@ fn main() -> Result<()> {
             }
         }
         Command::Runtimes => runtime::list(),
+        Command::Steam { command } => match command {
+            SteamCommand::Login => steam::login(),
+            SteamCommand::Logout => steam::logout(),
+            SteamCommand::Status => steam::status(),
+            SteamCommand::Games => steam::games(),
+            SteamCommand::Install { app_id, runtime_id } => {
+                runtime::check_rosetta()?;
+                steam::install(app_id, runtime_id.as_deref())
+            }
+        },
         Command::Saves { game, restore, refresh } => {
             let mut library = Library::load()?;
             let entry = library

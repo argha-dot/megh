@@ -2,6 +2,7 @@
 //! - install: GOG offline installer into <data_dir>/games/<slug>, via
 //!   innoextract when available, otherwise silently inside Wine.
 //! - add: a game already on disk; its files stay where they are.
+//! - Steam installs live in steam.rs and end in `register` too.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -115,6 +116,7 @@ pub fn install(setup: &Path, method: Method, runtime_id: Option<&str>) -> Result
     let game = Game {
         name: info.name.clone(),
         gog_id: info.game_id.parse().ok(),
+        steam_app_id: None,
         install_dir: dest,
         exe,
         args: task.arguments.split_whitespace().map(String::from).collect(),
@@ -146,6 +148,7 @@ pub fn add(exe: &Path, name: Option<String>, runtime_id: Option<&str>, args: Vec
     let game = Game {
         name,
         gog_id: info.and_then(|i| i.game_id.parse().ok()),
+        steam_app_id: None,
         install_dir: dir,
         exe: PathBuf::from(exe.file_name().context("bad exe path")?),
         args,
@@ -163,8 +166,8 @@ fn game_name(flag: Option<String>, info: Option<&GogInfo>, dir: &Path) -> Option
         .or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
 }
 
-/// Shared end of install and add: prefix, save paths, restore, library entry.
-fn register(slug: &str, mut game: Game, rt: &Runtime) -> Result<()> {
+/// Shared end of install, add and Steam installs: prefix, save paths, restore, library entry.
+pub(crate) fn register(slug: &str, mut game: Game, rt: &Runtime) -> Result<()> {
     let prefix = launch::prefix_path(slug)?;
     launch::ensure_prefix(rt, &prefix)?;
     game.runtime = Some(rt.id.clone());
@@ -284,7 +287,7 @@ fn read_gog_info(dir: &Path) -> Result<GogInfo> {
     bail!("no goggame-*.info found; only GOG installers are supported")
 }
 
-fn slugify(name: &str) -> String {
+pub(crate) fn slugify(name: &str) -> String {
     name.to_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|s| !s.is_empty())

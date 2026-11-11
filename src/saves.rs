@@ -25,11 +25,17 @@ struct Entry {
     #[serde(default)]
     files: BTreeMap<String, FileRule>,
     gog: Option<GogRef>,
+    steam: Option<SteamRef>,
 }
 
 #[derive(Deserialize)]
 struct GogRef {
     id: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct SteamRef {
+    id: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -46,11 +52,11 @@ struct When {
 }
 
 impl FileRule {
-    /// Windows saves, for any store or for GOG.
-    fn wanted(&self) -> bool {
+    /// Windows saves, for any store or for `store` (the game's).
+    fn wanted(&self, store: &str) -> bool {
         let windows = |w: &When| {
             w.os.as_deref().is_none_or(|os| os == "windows")
-                && w.store.as_deref().is_none_or(|s| s == "gog")
+                && w.store.as_deref().is_none_or(|s| s == store)
         };
         self.tags.iter().any(|t| t == "save")
             && (self.when.is_empty() || self.when.iter().any(windows))
@@ -60,7 +66,7 @@ impl FileRule {
 /// Save path templates for a game: the Ludusavi manifest, then the Unity fallback.
 /// - A failed manifest lookup is only a warning; the game still installs.
 pub fn locate(game: &Game) -> Vec<String> {
-    let found = lookup(game.gog_id, &game.name).unwrap_or_else(|e| {
+    let found = lookup(game.gog_id, game.steam_app_id, &game.name).unwrap_or_else(|e| {
         eprintln!("Warning: save lookup failed: {e:#}");
         Vec::new()
     });
@@ -85,10 +91,10 @@ fn unity_saves(exe: &Path) -> Option<String> {
     Some(format!("<winLocalAppDataLow>/{}/{}", esc(company), esc(product)))
 }
 
-/// Save path templates for a game, by GOG id or exact name.
+/// Save path templates for a game, by GOG id, Steam app id or exact name.
 /// - Re-downloads the manifest when it's over a week old.
 /// - Falls back to the cached copy if that fails (e.g. offline).
-pub fn lookup(gog_id: Option<u64>, name: &str) -> Result<Vec<String>> {
+pub fn lookup(gog_id: Option<u64>, steam_id: Option<u32>, name: &str) -> Result<Vec<String>> {
     let path = data_dir()?.join("cache/ludusavi-manifest.yaml");
     let modified = fs::metadata(&path).and_then(|m| m.modified());
     let fresh = modified.is_ok_and(|t| !is_stale(t, SystemTime::now()));
@@ -98,7 +104,7 @@ pub fn lookup(gog_id: Option<u64>, name: &str) -> Result<Vec<String>> {
         }
         eprintln!("Warning: {e:#}; using the cached save manifest");
     }
-    find_saves(&fs::read_to_string(&path)?, gog_id, name)
+    find_saves(&fs::read_to_string(&path)?, gog_id, steam_id, name)
 }
 
 fn is_stale(modified: SystemTime, now: SystemTime) -> bool {
@@ -123,24 +129,33 @@ fn download_manifest(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_saves(manifest: &str, gog_id: Option<u64>, name: &str) -> Result<Vec<String>> {
+/// - A Steam game keeps `store: steam` rules; everything else keeps `store: gog` ones.
+fn find_saves(manifest: &str, gog_id: Option<u64>, steam_id: Option<u32>, name: &str) -> Result<Vec<String>> {
     // The manifest is far bigger than the parser's default safety limits.
     let mut options = serde_saphyr::Options::default();
     options.budget = None;
     let manifest: BTreeMap<String, Entry> =
         serde_saphyr::from_str_with_options(manifest, options).context("bad Ludusavi manifest")?;
-    let by_id = gog_id.and_then(|id| {
+    let by_gog = gog_id.and_then(|id| {
         manifest
             .values()
             .find(|e| e.gog.as_ref().and_then(|g| g.id) == Some(id))
     });
-    let Some(entry) = by_id.or_else(|| manifest.get(name)) else {
+    let by_steam = || {
+        steam_id.and_then(|id| {
+            manifest
+                .values()
+                .find(|e| e.steam.as_ref().and_then(|s| s.id) == Some(id))
+        })
+    };
+    let Some(entry) = by_gog.or_else(by_steam).or_else(|| manifest.get(name)) else {
         return Ok(Vec::new());
     };
+    let store = if steam_id.is_some() { "steam" } else { "gog" };
     Ok(entry
         .files
         .iter()
-        .filter(|(_, rule)| rule.wanted())
+        .filter(|(_, rule)| rule.wanted(store))
         .map(|(path, _)| path.clone())
         .collect())
 }
@@ -352,6 +367,8 @@ Steamy:
         - store: steam
     "<winAppData>/Steamy":
       tags: [save]
+  steam:
+    id: 4242
 Empty:
   gog:
     id: 1
@@ -369,6 +386,7 @@ Empty:
         Game {
             name: "Test".into(),
             gog_id: None,
+            steam_app_id: None,
             install_dir,
             exe: PathBuf::from("Game.exe"),
             args: Vec::new(),
@@ -385,7 +403,7 @@ Empty:
     }
 
     #[test]
-    fn wanted_keeps_windows_and_gog_saves_only() {
+    fn wanted_keeps_windows_saves_for_the_games_store() {
         let rule = |tags: &[&str], when: Vec<When>| FileRule {
             tags: tags.iter().map(|t| t.to_string()).collect(),
             when,
@@ -394,24 +412,35 @@ Empty:
             os: os.map(Into::into),
             store: store.map(Into::into),
         };
-        assert!(rule(&["save"], vec![]).wanted());
-        assert!(rule(&["save"], vec![when(Some("windows"), None)]).wanted());
-        assert!(rule(&["save"], vec![when(None, Some("gog"))]).wanted());
-        assert!(!rule(&["config"], vec![]).wanted());
-        assert!(!rule(&["save"], vec![when(Some("mac"), None)]).wanted());
-        assert!(!rule(&["save"], vec![when(None, Some("steam"))]).wanted());
+        assert!(rule(&["save"], vec![]).wanted("gog"));
+        assert!(rule(&["save"], vec![when(Some("windows"), None)]).wanted("gog"));
+        assert!(rule(&["save"], vec![when(None, Some("gog"))]).wanted("gog"));
+        assert!(!rule(&["config"], vec![]).wanted("gog"));
+        assert!(!rule(&["save"], vec![when(Some("mac"), None)]).wanted("gog"));
+        assert!(!rule(&["save"], vec![when(None, Some("steam"))]).wanted("gog"));
+        // Steam games keep Steam rules and drop GOG ones.
+        assert!(rule(&["save"], vec![when(None, Some("steam"))]).wanted("steam"));
+        assert!(!rule(&["save"], vec![when(None, Some("gog"))]).wanted("steam"));
         // Any one matching condition is enough.
-        assert!(rule(&["save"], vec![when(Some("linux"), None), when(Some("windows"), None)]).wanted());
+        assert!(rule(&["save"], vec![when(Some("linux"), None), when(Some("windows"), None)]).wanted("gog"));
     }
 
     #[test]
     fn find_saves_by_gog_id_then_name() {
         let shogun = vec!["<home>/AppData/LocalLow/Roboatino/ShogunShowdown".to_string()];
-        assert_eq!(find_saves(MANIFEST, Some(1104084973), "whatever").unwrap(), shogun);
-        assert_eq!(find_saves(MANIFEST, Some(999), "Shogun Showdown").unwrap(), shogun);
-        assert_eq!(find_saves(MANIFEST, None, "Steamy").unwrap(), ["<winAppData>/Steamy"]);
-        assert!(find_saves(MANIFEST, Some(1), "Empty").unwrap().is_empty());
-        assert!(find_saves(MANIFEST, None, "Unknown").unwrap().is_empty());
+        assert_eq!(find_saves(MANIFEST, Some(1104084973), None, "whatever").unwrap(), shogun);
+        assert_eq!(find_saves(MANIFEST, Some(999), None, "Shogun Showdown").unwrap(), shogun);
+        assert_eq!(find_saves(MANIFEST, None, None, "Steamy").unwrap(), ["<winAppData>/Steamy"]);
+        assert!(find_saves(MANIFEST, Some(1), None, "Empty").unwrap().is_empty());
+        assert!(find_saves(MANIFEST, None, None, "Unknown").unwrap().is_empty());
+    }
+
+    #[test]
+    fn find_saves_by_steam_id_keeps_steam_rules() {
+        let steamy = ["<winAppData>/Steamy", "<winDocuments>/My Games/Steamy"];
+        assert_eq!(find_saves(MANIFEST, None, Some(4242), "whatever").unwrap(), steamy);
+        // Unknown Steam id: falls back to the name, still with Steam rules.
+        assert_eq!(find_saves(MANIFEST, None, Some(1), "Steamy").unwrap(), steamy);
     }
 
     #[test]

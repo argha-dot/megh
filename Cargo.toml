@@ -7,11 +7,22 @@ description = "Install and run Windows games on Apple Silicon Macs with Wine"
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.22"
 clap = { version = "4.6.7", features = ["derive"] }
 glob = "0.3.4"
+keyring = "4.2.0"
+prost = "0.14"
+rpassword = "7"
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = "2.0.0"
 serde_json = "1.0.154"
+# Unreleased main: needed for Steam Guard code + phone approval at once (upstream #6).
+# - Switch back to crates.io once 0.4.0 is published.
+steamroom = { git = "https://github.com/landaire/steamroom", rev = "21ba4f8b2117bd72f85b0f3ecde8825a8ca8f128" }
+steamroom-client = { git = "https://github.com/landaire/steamroom", rev = "21ba4f8b2117bd72f85b0f3ecde8825a8ca8f128" }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync"] }
+# Same spec as steamroom's, so nothing extra compiles. Unzips depot manifests.
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

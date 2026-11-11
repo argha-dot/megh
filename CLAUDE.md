@@ -18,6 +18,8 @@ Inspired by GameNative (Android). GPL-3.0-only. The README is the owner's; don't
 - `src/launch.rs`: per-game prefixes and launching; `wine()` builds every Wine command.
 - `src/saves.rs`: save paths from the Ludusavi manifest, backup and restore.
 - `src/library.rs`: `library.yml` (installed games).
+- `src/steam.rs`: Steam login/logout/status/games via steamroom.
+  - The only async code: it runs its own tokio runtime (`block_on`); everything else stays sync.
 - `runtimes.yml`: built-in runtime and graphics lists, compiled in via `include_str!`.
 - `tests/fixtures/`: test data (a real `goggame-*.info`).
 
@@ -30,6 +32,8 @@ Inspired by GameNative (Android). GPL-3.0-only. The README is the owner's; don't
 - `prefixes/<slug>/`: one Wine prefix per game.
 - `saves/<slug>/<timestamp>/`: backups (keep 1), mirrored as `prefix/...` and `game/...`.
 - `cache/ludusavi-manifest.yaml`: re-downloaded when over 7 days old.
+- `steam.yml`: logged-in Steam account name and Steam ID (no secrets).
+  - The refresh token is in the macOS Keychain (service `megh-steam`, account = Steam username). Passwords are never stored.
 
 ## Wine / macOS facts (each cost real debugging)
 - Wine needs an absolute exe path; bare relative names fail with "Environment variable not found".

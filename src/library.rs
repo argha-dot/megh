@@ -20,6 +20,8 @@ pub struct Game {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gog_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steam_app_id: Option<u32>,
     pub install_dir: PathBuf,
     /// Relative to install_dir.
     pub exe: PathBuf,
@@ -72,6 +74,7 @@ mod tests {
             Game {
                 name: "Forager".into(),
                 gog_id: Some(2106942030),
+                steam_app_id: Some(1641090),
                 install_dir: PathBuf::from("/data/megh/games/forager"),
                 exe: PathBuf::from("Forager.exe"),
                 args: vec!["-windowed".into()],
@@ -85,6 +88,7 @@ mod tests {
         let back: Library = serde_saphyr::from_str(&yaml).unwrap();
         let game = &back.games["forager"];
         assert_eq!(game.gog_id, Some(2106942030));
+        assert_eq!(game.steam_app_id, Some(1641090));
         assert_eq!(game.args, ["-windowed"]);
         assert_eq!(game.runtime.as_deref(), Some("wine-crossover-23.7.1-1"));
         assert_eq!(game.graphics.as_deref(), Some("dxvk-macos-1.10.3"));
@@ -99,7 +103,7 @@ mod tests {
         let library: Library = serde_saphyr::from_str(yaml).unwrap();
         let game = &library.games["shogun-showdown"];
         assert!(game.runtime.is_none() && game.gog_id.is_none() && game.env.is_empty());
-        assert!(game.graphics.is_none());
+        assert!(game.graphics.is_none() && game.steam_app_id.is_none());
         assert!(game.args.is_empty() && game.saves.is_empty());
     }
 }
