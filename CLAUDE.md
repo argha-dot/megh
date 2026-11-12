@@ -14,21 +14,29 @@ Inspired by GameNative (Android). GPL-3.0-only. The README is the owner's; don't
 ## Layout
 - `src/main.rs`: clap CLI, `data_dir()`, `confirm()` prompts.
 - `src/runtime.rs`: Wine runtimes from `runtimes.yml`; auto-pick by exe bitness (`exe_arch`, `pick`); install by path or download.
-- `src/install.rs`: `install` (GOG offline installers), `add` (games already on disk), `delete`; both share `register`.
+- `src/install.rs`: `install` (GOG offline installers), `add` (games already on disk), `delete`; all installs end in `register`.
 - `src/launch.rs`: per-game prefixes and launching; `wine()` builds every Wine command.
 - `src/saves.rs`: save paths from the Ludusavi manifest, backup and restore.
 - `src/library.rs`: `library.yml` (installed games).
-- `src/steam.rs`: Steam login/logout/status/games via steamroom.
+- `src/steam.rs`: Steam login/logout/status/games and installs via steamroom.
   - The only async code: it runs its own tokio runtime (`block_on`); everything else stays sync.
+  - Installs: `pick_depots` (Windows, 64-bit preferred, no DLC/redists), `launch_option` (exe + args from the app info), then `install::register`.
+  - `megh install steam:<appid>` is the same as `megh steam install <appid>` (`parse_target`).
+- steamroom comes from git main, pinned to a commit in `Cargo.toml`.
+  - 0.3.0 on crates.io can't take a Steam Guard code and phone approval together (upstream #6).
+  - Switch back to crates.io once 0.4.0 is published.
 - `runtimes.yml`: built-in runtime and graphics lists, compiled in via `include_str!`.
 - `tests/fixtures/`: test data (a real `goggame-*.info`).
 
 ## Data dir (`~/Library/Application Support/megh/`)
 - `library.yml`: games; hand-editable (`args`, `runtime`, `graphics`, `env`, `saves`).
+  - `gog_id` / `steam_app_id` say where a game came from; save lookup matches by them, then by name.
 - `runtimes.yml`: user additions/overrides to the built-in list, matched by `id`.
 - `runtimes/<id>/`: extracted runtimes, or a symlink to an existing folder.
 - `graphics/<id>/`: extracted graphics layers (DXVK), same install flow as runtimes.
 - `games/<slug>/`: games megh installed. Added games live elsewhere and are never deleted.
+  - Steam downloads go to `games/.installing-<slug>/` first; rerunning the install resumes there.
+  - Steam games keep steamroom's `.DepotDownloader/` (installed manifests), needed for future updates.
 - `prefixes/<slug>/`: one Wine prefix per game.
 - `saves/<slug>/<timestamp>/`: backups (keep 1), mirrored as `prefix/...` and `game/...`.
 - `cache/ludusavi-manifest.yaml`: re-downloaded when over 7 days old.
@@ -54,6 +62,8 @@ Inspired by GameNative (Android). GPL-3.0-only. The README is the owner's; don't
   - `MVK_CONFIG_FAST_MATH_ENABLED=0`, or bloom blows out to white.
   - Turning it off is just removing `graphics:`: without the override, Wine loads its builtin DLLs and ignores the copies.
 - `Read access denied for device Z:\` warnings are harmless.
+- Steam games that ship `steam_api(64).dll` fail without Steam running (e.g. Shogun Showdown: black screen).
+  - Unity's `Player.log` shows `SteamAPI_Init() failed`; DRM-free ones (Undertale) just run. Goldberg is the planned fix.
 
 ## Conventions
 - Tests never touch `$HOME` or the network.
